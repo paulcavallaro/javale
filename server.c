@@ -30,7 +30,7 @@ int main(int argc, char *argv[])
         if (port <= 0) die("Invalid port");
 
         int status, sockfd;
-        size_t len = 128;
+        size_t len = 1024;
         struct sockaddr_storage their_addr;
         socklen_t addr_size = sizeof(their_addr);
         struct addrinfo hints;
