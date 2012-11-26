@@ -23,6 +23,8 @@ void die(const char * message)
         exit(1);
 }
 
+void events(int sockfd);
+
 int main(int argc, char *argv[])
 {
         if (argc != 2) die("USAGE: server PORT");
@@ -30,12 +32,8 @@ int main(int argc, char *argv[])
         if (port <= 0) die("Invalid port");
 
         int status, sockfd;
-        size_t len = 1024;
-        struct sockaddr_storage their_addr;
-        socklen_t addr_size = sizeof(their_addr);
         struct addrinfo hints;
         struct addrinfo *res;
-        char buf[len];
 
         memset(&hints, 0, sizeof(hints));
         hints.ai_family = AF_UNSPEC;
@@ -54,28 +52,38 @@ int main(int argc, char *argv[])
 
         if (listen(sockfd, 10) < 0) die("Failed to listen on port");
 
-        // Start KQueue Event Loop
+        events(sockfd);
 
-        int kq = kqueue();
+        freeaddrinfo(res);
+
+        return 0;
+}
+
+void events(int sockfd) {
+        size_t len = 1024;
+        char buf[len];
+        int kq, i, recv_status, new_fd, enqueue_status, k_status;
+        int nevents = 10;
+        struct kevent64_s events[nevents];
+        struct kevent64_s event, listen_kevent;
+        struct sockaddr_storage their_addr;
+        socklen_t addr_size = sizeof(their_addr);
+
+        // Start KQueue Event Loop
+        kq = kqueue();
         if (kq < 0) die("Couldn't create kqueue");
 
         // Add Socket Listen kevent64 to kqueue
-        struct kevent64_s listen_kevent;
         EV_SET64(&listen_kevent, sockfd, EVFILT_READ, EV_ADD, 0, 0, 0, 0, 0);
 
-        status = kevent64(kq, &listen_kevent, 1, NULL, 0, 0, NULL);
+        k_status = kevent64(kq, &listen_kevent, 1, NULL, 0, 0, NULL);
 
-        if (status < 0) die("Could not register kevent64 to listen to incoming connections");
-
-        int i, recv_status, new_fd, enqueue_status;
-        int nevents = 10;
-        struct kevent64_s events[nevents];
-        struct kevent64_s event;
+        if (k_status < 0) die("Could not register kevent64 to listen to incoming connections");
 
         for (;;) {
-                status = kevent64(kq, NULL, 0, events, nevents, 0, NULL);
-                if (status < 0) die("kevent64 call failed");
-                for (i = 0; i < status; i++) {
+                k_status = kevent64(kq, NULL, 0, events, nevents, 0, NULL);
+                if (k_status < 0) die("kevent64 call failed");
+                for (i = 0; i < k_status; i++) {
                         event = events[i];
                         fprintf(stdout, "Got an event: (%lld, %d, %d, %d, %lld, %lld, %lld, %lld)\n", event.ident, event.filter, event.flags, event.fflags, event.data, event.udata, event.ext[0], event.ext[1]);
                         if (event.ident == sockfd && event.filter == EVFILT_READ) {
@@ -83,33 +91,29 @@ int main(int argc, char *argv[])
                                 // accept and read
                                 new_fd = accept(sockfd, (struct sockaddr*)&their_addr, &addr_size);
                                 if (new_fd < 0) die("Failed to accept request");
-				fprintf(stdout, "Recived accept waiting event\n");
+                                fprintf(stdout, "Recived accept waiting event\n");
 
-				struct kevent64_s kevent;
-				EV_SET64(&kevent, new_fd, EVFILT_READ, EV_ADD, 0, 0, 0, 0, 0);
-				enqueue_status = kevent64(kq, &kevent, 1, NULL, 0, 0, NULL);
-				if (enqueue_status < 0) die("Failed to enqueue request socket");
+                                struct kevent64_s kevent;
+                                EV_SET64(&kevent, new_fd, EVFILT_READ, EV_ADD, 0, 0, 0, 0, 0);
+                                enqueue_status = kevent64(kq, &kevent, 1, NULL, 0, 0, NULL);
+                                if (enqueue_status < 0) die("Failed to enqueue request socket");
                         } else if (event.flags & EV_EOF) {
-				// Read until empty, then close
-				fprintf(stdout, "Recived closed event\n");
-				while ((recv_status = recv(event.ident, buf, len, 0)) > 0) {
-					fprintf(stdout, "%s", buf);
-					memset(buf, 0, len);
-				}
-				if (close(event.ident) < 0) die("Failed to close handle");
-			} else if (event.flags & EVFILT_READ) {
-				fprintf(stdout, "Recived read waiting event\n");
-				// Read from socket
-				recv_status = recv(event.ident, buf, len, 0);
-				if (recv_status > 0) {
-					fprintf(stdout, "%s", buf);
-					memset(buf, 0, len);
-				}
-			}
+                                // Read until empty, then close
+                                fprintf(stdout, "Recived closed event\n");
+                                while ((recv_status = recv(event.ident, buf, len, 0)) > 0) {
+                                        fprintf(stdout, "%s", buf);
+                                        memset(buf, 0, len);
+                                }
+                                if (close(event.ident) < 0) die("Failed to close handle");
+                        } else if (event.flags & EVFILT_READ) {
+                                fprintf(stdout, "Recived read waiting event\n");
+                                // Read from socket
+                                recv_status = recv(event.ident, buf, len, 0);
+                                if (recv_status > 0) {
+                                        fprintf(stdout, "%s", buf);
+                                        memset(buf, 0, len);
+                                }
+                        }
                 }
         }
-
-        freeaddrinfo(res);
-
-        return 0;
 }
